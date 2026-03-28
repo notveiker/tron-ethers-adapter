@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tron-ethers-adapter — Live Playground</title>
+<style>
+  :root { --bg: #0a0a0f; --card: #12121a; --border: #2a2a3a; --accent: #c23631; --green: #2ecc71; --text: #e4e4e7; --muted: #8888a0; --code-bg: #1a1a2e; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: var(--bg); color: var(--text); line-height: 1.6; }
+  .container { max-width: 900px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  h1 span { color: var(--accent); }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .status-bar { display: flex; gap: 16px; align-items: center; padding: 10px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; font-size: 12px; flex-wrap: wrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.green { background: var(--green); }
+  .dot.red { background: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+  .row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+  .row .label { color: var(--muted); }
+  .row .value { color: var(--text); text-align: right; word-break: break-all; max-width: 60%; }
+  input[type="text"] { width: 100%; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 13px; margin-bottom: 8px; }
+  input:focus { outline: none; border-color: var(--accent); }
+  button { padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; font-family: inherit; font-size: 13px; cursor: pointer; }
+  button:hover { opacity: 0.9; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .code { background: var(--code-bg); padding: 12px; border-radius: 6px; font-size: 12px; overflow-x: auto; white-space: pre; color: var(--muted); margin-top: 8px; }
+  .code .kw { color: #c678dd; }
+  .code .fn { color: #61afef; }
+  .code .str { color: #98c379; }
+  .code .cmt { color: #5c6370; }
+  .result { margin-top: 12px; }
+  .result pre { background: var(--code-bg); padding: 12px; border-radius: 6px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  .loading { color: var(--muted); font-style: italic; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: rgba(194,54,49,0.15); color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><span>tron-ethers-adapter</span> — Live Playground</h1>
+  <p class="subtitle">ethers.js v6 compatibility layer for TronWeb, connected to <strong>Nile Testnet</strong></p>
+
+  <div class="status-bar" id="status">
+    <span><span class="dot" id="dot"></span> Connecting...</span>
+  </div>
+
+  <!-- Block Info -->
+  <div class="card">
+    <h2>Latest Block</h2>
+    <div id="block-info"><span class="loading">Loading...</span></div>
+  </div>
+
+  <!-- Address Lookup -->
+  <div class="card">
+    <h2>Address Lookup</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Enter any TRON (T...) or Ethereum (0x...) address</p>
+    <input type="text" id="addr-input" placeholder="TJCnKsPa7y5okkXvQAidZBzqx3QyQ6sxMW" value="TJCnKsPa7y5okkXvQAidZBzqx3QyQ6sxMW">
+    <button id="addr-btn" onclick="lookupAddress()">Lookup</button>
+    <div id="addr-result" class="result"></div>
+    <div class="code"><span class="cmt">// ethers.js equivalent</span>
+<span class="kw">const</span> balance = <span class="kw">await</span> provider.<span class="fn">getBalance</span>(<span class="str">"T..."</span>);
+<span class="kw">const</span> resources = <span class="kw">await</span> provider.<span class="fn">getAccountResources</span>(<span class="str">"T..."</span>);</div>
+  </div>
+
+  <!-- TRC-20 Token -->
+  <div class="card">
+    <h2>TRC-20 Token Reader</h2>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Query any TRC-20 contract — same as ethers.Contract</p>
+    <input type="text" id="token-input" placeholder="TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf" value="TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf">
+    <button id="token-btn" onclick="lookupToken()">Read Contract</button>
+    <div id="token-result" class="result"></div>
+    <div class="code"><span class="cmt">// Identical to ethers.Contract pattern</span>
+<span class="kw">const</span> token = <span class="kw">new</span> <span class="fn">TronContract</span>(addr, TRC20_ABI, provider);
+<span class="kw">const</span> name = <span class="kw">await</span> token.<span class="fn">name</span>();
+<span class="kw">const</span> symbol = <span class="kw">await</span> token.<span class="fn">symbol</span>();</div>
+  </div>
+
+  <!-- Architecture -->
+  <div class="card">
+    <h2>How It Works</h2>
+    <div class="code" style="color:var(--text);">Your Code (ethers.js style)
+        │
+   tron-ethers-adapter
+   ├── TronProvider    →  provider.getBalance(), .getBlock()
+   ├── TronSigner      →  signer.sendTransaction()
+   ├── TronContract    →  contract.name(), .transfer()
+   ├── Address Utils   →  toTronAddress(), toEthAddress()
+   └── parseTRX()      →  like parseEther(), but 6 decimals
+        │
+     TronWeb (peer dep)
+        │
+     TRON Full Node  ← <span style="color:var(--green);">Live Nile data shown above</span></div>
+  </div>
+
+  <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:20px;">
+    <span class="badge">Nile Testnet</span> &nbsp;
+    <a href="https://nile.tronscan.org" target="_blank">Explorer</a> &nbsp;·&nbsp;
+    <a href="/api/health" target="_blank">API Health</a>
+  </p>
+</div>
+
+<script>
+const API = '';
+
+async function init() {
+  try {
+    const h = await (await fetch(API + '/api/health')).json();
+    const dot = document.getElementById('dot');
+    const status = document.getElementById('status');
+    dot.className = h.connected ? 'dot green' : 'dot red';
+    status.innerHTML = `<span><span class="dot ${h.connected?'green':'red'}"></span> ${h.connected?'Connected':'Disconnected'}</span>` +
+      `<span>Block #${h.blockNumber.toLocaleString()}</span>` +
+      `<span>${h.latencyMs}ms</span>` +
+      `<span>${h.network}</span>`;
+
+    const b = await (await fetch(API + '/api/block/latest')).json();
+    const bl = b.block;
+    document.getElementById('block-info').innerHTML = `
+      <div class="row"><span class="label">Number</span><span class="value">#${bl.number.toLocaleString()}</span></div>
+      <div class="row"><span class="label">Hash</span><span class="value">${bl.hash}</span></div>
+      <div class="row"><span class="label">Time</span><span class="value">${new Date(bl.timestamp).toISOString()}</span></div>
+      <div class="row"><span class="label">Transactions</span><span class="value">${bl.transactions.length}</span></div>
+    `;
+  } catch(e) { document.getElementById('status').innerHTML = '<span class="dot red"></span> Connection failed'; }
+}
+
+async function lookupAddress() {
+  const addr = document.getElementById('addr-input').value.trim();
+  const el = document.getElementById('addr-result');
+  el.innerHTML = '<span class="loading">Querying Nile...</span>';
+  try {
+    const d = await (await fetch(API + '/api/address/' + encodeURIComponent(addr))).json();
+    if (d.error) { el.innerHTML = `<pre style="color:var(--accent)">${d.error}</pre>`; return; }
+    el.innerHTML = `<pre>${JSON.stringify(d, null, 2)}</pre>`;
+  } catch(e) { el.innerHTML = `<pre style="color:var(--accent)">Error: ${e.message}</pre>`; }
+}
+
+async function lookupToken() {
+  const addr = document.getElementById('token-input').value.trim();
+  const el = document.getElementById('token-result');
+  el.innerHTML = '<span class="loading">Reading contract on Nile...</span>';
+  try {
+    const d = await (await fetch(API + '/api/token/' + encodeURIComponent(addr))).json();
+    if (d.error) { el.innerHTML = `<pre style="color:var(--accent)">${d.error}</pre>`; return; }
+    el.innerHTML = `<pre>${JSON.stringify(d, null, 2)}</pre>`;
+  } catch(e) { el.innerHTML = `<pre style="color:var(--accent)">Error: ${e.message}</pre>`; }
+}
+
+init();
+</script>
+</body>
+</html>
