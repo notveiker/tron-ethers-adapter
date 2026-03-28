@@ -38,6 +38,16 @@ export const NETWORKS: Record<string, TronNetwork> = {
   },
 };
 
+/**
+ * TRON network chain IDs — used in EIP-712 / TIP-712 typed data domains.
+ * Reference: https://developers.tron.network/docs/tron-network-information
+ */
+export const CHAIN_IDS: Record<string, number> = {
+  mainnet: 728126428,
+  shasta:  2494104990,
+  nile:    3448148188,
+};
+
 // ─── Block ──────────────────────────────────────────────────────────
 
 /** ethers.js-compatible Block interface */
@@ -110,9 +120,27 @@ export interface Log {
   logIndex: number;
 }
 
+/** A decoded contract event log — extends Log with parsed args and event name. */
+export interface LogEvent extends Log {
+  /** Decoded event arguments keyed by parameter name. */
+  args: Record<string, unknown>;
+  /** Event name from the ABI (e.g. "Transfer"). */
+  event: string;
+}
+
 export interface EventFilter {
   address?: AnyAddress;
   topics?: (string | string[] | null)[];
+}
+
+/** Extended filter with block range — used by provider.getLogs(). */
+export interface LogFilter {
+  address?: AnyAddress;
+  topics?: (string | string[] | null)[];
+  /** Inclusive start block number. */
+  fromBlock?: number;
+  /** Inclusive end block number. Defaults to latest. */
+  toBlock?: number;
 }
 
 // ─── Contract ───────────────────────────────────────────────────────
@@ -165,6 +193,48 @@ export interface NetworkHealth {
   latencyMs: number;
   network: string;
   fullHost: string;
+}
+
+/** Network info returned by provider.getNetwork() — mirrors ethers.js Network. */
+export interface NetworkInfo {
+  /** Human-readable network name: "mainnet", "shasta", "nile", or custom. */
+  name: string;
+  /** TRON chain ID as bigint — matches EIP-712 domain chainId field. */
+  chainId: bigint;
+}
+
+/**
+ * Fee data returned by provider.getFeeData() — maps ETH gas concepts to TRON resources.
+ * On TRON, transaction cost = (energy_used × energyPrice) + (bandwidth_bytes × bandwidthPrice).
+ */
+export interface FeeData {
+  /** Energy price in SUN per energy unit. Comes from chain parameter getEnergyFee (~420 SUN). */
+  energyPrice: bigint;
+  /** Bandwidth price in SUN per byte. Comes from chain parameter getTransactionFee (~1000 SUN). */
+  bandwidthPrice: bigint;
+  /** Alias for energyPrice — keeps ethers.js callsites working without changes. */
+  gasPrice: bigint;
+  /** Always null on TRON — EIP-1559 base fee does not apply. */
+  maxFeePerGas: null;
+  /** Always null on TRON — EIP-1559 priority fee does not apply. */
+  maxPriorityFeePerGas: null;
+}
+
+/** EIP-712 / TIP-712 typed data domain separator fields. */
+export interface TypedDataDomain {
+  name?: string;
+  version?: string;
+  /** Chain ID — use CHAIN_IDS["mainnet"] etc. for TRON networks. */
+  chainId?: number | bigint;
+  /** Contract address in any supported TRON/Ethereum format. */
+  verifyingContract?: string;
+  salt?: string;
+}
+
+/** A single field in an EIP-712 / TIP-712 struct type definition. */
+export interface TypedDataField {
+  name: string;
+  type: string;
 }
 
 // ─── Error Types ────────────────────────────────────────────────────

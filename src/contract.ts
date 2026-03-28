@@ -2,7 +2,7 @@
 
 import { TronProvider } from './provider';
 import { TronSigner } from './signer';
-import { AnyAddress, TransactionResponse, ContractDeployParams } from './types';
+import { AnyAddress, TransactionResponse, ContractDeployParams, LogEvent } from './types';
 import {
   toTronAddress,
   normalizeTronError,
@@ -31,6 +31,10 @@ export class TronContract {
   /** Underlying TronWeb contract instance */
   private _tronContract: any = null;
   private _initialized = false;
+
+  /** Polling-based event subscriptions */
+  private _eventPollers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private _eventListeners: Map<string, Set<(...args: any[]) => void>> = new Map();
 
   /** Dynamic method accessors keyed by function name */
   [key: string]: any;
@@ -139,6 +143,185 @@ export class TronContract {
     return new TronContract(this.address, this.abi, signer);
   }
 
+  // ─── Event Methods ───────────────────────────────────────────────
+
+  /**
+   * Query historical events emitted by this contract.
+   * Analogous to ethers Contract.queryFilter().
+   *
+   * Uses the TronGrid event API (requires mainnet/shasta/nile endpoints).
+   * Returns decoded event args keyed by parameter name from the ABI.
+   *
+   * @example
+   *   const transfers = await token.queryFilter('Transfer', latestBlock - 1000);
+   *   for (const e of transfers) {
+   *     console.log(e.args.from, e.args.to, e.args.value);
+   *   }
+   *
+   * @param event - Event name (e.g. "Transfer") or object with name field
+   * @param fromBlock - Inclusive start block (default: 0)
+   * @param toBlock   - Inclusive end block (default: latest)
+   */
+  async queryFilter(
+    event: string | { name: string },
+    fromBlock?: number,
+    toBlock?: number
+  ): Promise<LogEvent[]> {
+    const eventName = typeof event === 'string' ? event : event.name;
+    const tronWeb = this.signer?.tronWeb || this.provider.tronWeb;
+
+    try {
+      const options: Record<string, unknown> = { eventName, size: 200 };
+      if (fromBlock !== undefined) options.minBlockNumber = fromBlock;
+      if (toBlock !== undefined)   options.maxBlockNumber = toBlock;
+
+      const events = await tronWeb.getEventResult(this.address, options);
+      if (!Array.isArray(events)) return [];
+
+      const eventABI = this.abi.find(
+        (e) => e.type === 'event' && e.name === eventName
+      );
+
+      return events.map((e: any, index: number) => ({
+        address: this.address,
+        topics: e.raw?.topics || [],
+        data: e.raw?.data ? '0x' + e.raw.data : '0x',
+        blockNumber: e.block || 0,
+        transactionHash: e.transaction || '',
+        logIndex: index,
+        args: this._decodeEventArgs(e.result || {}, eventABI),
+        event: eventName,
+      }));
+    } catch (error) {
+      throw normalizeTronError(error);
+    }
+  }
+
+  /**
+   * Subscribe to contract events using polling.
+   * Analogous to ethers Contract.on().
+   *
+   * Polls the TronGrid event API every 3 seconds for new events.
+   * The listener receives (args, event) where args is keyed by param name.
+   *
+   * @example
+   *   token.on('Transfer', (args, event) => {
+   *     console.log(`Transfer: ${args.from} → ${args.to}: ${args.value}`);
+   *   });
+   *   // Later: token.off('Transfer') to stop
+   */
+  on(event: string, listener: (args: Record<string, unknown>, raw: LogEvent) => void): this {
+    if (!this._eventListeners.has(event)) {
+      this._eventListeners.set(event, new Set());
+      this._startPolling(event);
+    }
+    this._eventListeners.get(event)!.add(listener as any);
+    return this;
+  }
+
+  /**
+   * Subscribe to a contract event exactly once.
+   * Analogous to ethers Contract.once().
+   */
+  once(event: string, listener: (args: Record<string, unknown>, raw: LogEvent) => void): this {
+    const wrapped = (args: Record<string, unknown>, raw: LogEvent) => {
+      listener(args, raw);
+      this.off(event, wrapped as any);
+    };
+    return this.on(event, wrapped as any);
+  }
+
+  /**
+   * Unsubscribe from a contract event.
+   * Analogous to ethers Contract.off().
+   *
+   * If listener is omitted, removes all listeners for the event.
+   */
+  off(event: string, listener?: (...args: any[]) => void): this {
+    if (!listener) {
+      this._eventListeners.delete(event);
+      this._stopPolling(event);
+    } else {
+      const set = this._eventListeners.get(event);
+      if (set) {
+        set.delete(listener);
+        if (set.size === 0) {
+          this._eventListeners.delete(event);
+          this._stopPolling(event);
+        }
+      }
+    }
+    return this;
+  }
+
+  /**
+   * Remove all event listeners and stop all polling.
+   * Analogous to ethers Contract.removeAllListeners().
+   */
+  removeAllListeners(): this {
+    for (const event of this._eventListeners.keys()) {
+      this._stopPolling(event);
+    }
+    this._eventListeners.clear();
+    return this;
+  }
+
+  private _startPolling(event: string, pollIntervalMs = 3000): void {
+    let lastBlock = 0;
+
+    const poll = async () => {
+      try {
+        const currentBlock = await this.provider.getBlockNumber();
+        if (currentBlock <= lastBlock) return;
+
+        const events = await this.queryFilter(event, lastBlock + 1, currentBlock);
+        lastBlock = currentBlock;
+
+        const listeners = this._eventListeners.get(event);
+        if (listeners && events.length > 0) {
+          for (const e of events) {
+            for (const listener of listeners) {
+              listener(e.args, e);
+            }
+          }
+        }
+      } catch {
+        // Swallow polling errors — transient network issues should not crash the listener
+      }
+    };
+
+    // Run once immediately to set lastBlock, then start interval
+    this.provider.getBlockNumber()
+      .then((b) => { lastBlock = b; })
+      .catch(() => {});
+
+    this._eventPollers.set(event, setInterval(poll, pollIntervalMs));
+  }
+
+  private _stopPolling(event: string): void {
+    const timer = this._eventPollers.get(event);
+    if (timer !== undefined) {
+      clearInterval(timer);
+      this._eventPollers.delete(event);
+    }
+  }
+
+  private _decodeEventArgs(
+    result: Record<string, unknown>,
+    eventABI?: ABIEntry
+  ): Record<string, unknown> {
+    if (!eventABI?.inputs) return result;
+
+    // Re-key numeric TronWeb result indices to named parameter keys
+    const decoded: Record<string, unknown> = { ...result };
+    eventABI.inputs.forEach((input, i) => {
+      if (decoded[i] !== undefined && decoded[input.name] === undefined) {
+        decoded[input.name] = decoded[i];
+      }
+    });
+    return decoded;
+  }
+
   // ─── Internal: Dynamic Method Proxy Builder ─────────────────────
 
   /**
@@ -243,7 +426,7 @@ export class TronContract {
           confirmations: 0,
           raw: { txID: txHash, method: methodName, args },
           wait: async () => {
-            return this.provider['_waitForTransaction'](txHash);
+            return this.provider.waitForTransaction(txHash);
           },
         };
 

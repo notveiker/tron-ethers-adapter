@@ -3,14 +3,19 @@
 import {
   Block,
   TransactionResponse,
+  TransactionRequest,
   TransactionReceipt,
   TronProviderOptions,
   TronNetwork,
   NETWORKS,
+  CHAIN_IDS,
   AnyAddress,
   AccountResources,
   NetworkHealth,
+  NetworkInfo,
+  FeeData,
   Log,
+  LogFilter,
 } from './types';
 import {
   toTronAddress,
@@ -18,6 +23,7 @@ import {
   normalizeTronError,
   TronAdapterError,
   formatTRX,
+  toBigInt,
 } from './utils';
 import { TronAdapterErrorCode } from './types';
 
@@ -300,6 +306,213 @@ export class TronProvider {
         fullHost: this.network.fullHost,
       };
     }
+  }
+
+  // ─── ethers.js v6 parity methods ─────────────────────────────────
+
+  /**
+   * Returns network name and chain ID.
+   * Analogous to ethers provider.getNetwork().
+   *
+   * TRON chain IDs: mainnet=728126428, shasta=2494104990, nile=3448148188.
+   * These match what you'd put in an EIP-712 / TIP-712 domain separator.
+   */
+  async getNetwork(): Promise<NetworkInfo> {
+    const chainId = CHAIN_IDS[this.network.name] ?? 0;
+    return { name: this.network.name, chainId: BigInt(chainId) };
+  }
+
+  /**
+   * Execute a read-only call and return the raw hex result.
+   * Analogous to ethers provider.call() / eth_call.
+   *
+   * Uses TronWeb's triggerConstantContract, which does not broadcast or
+   * consume energy. Works for any ABI-encoded calldata.
+   *
+   * @example
+   *   const data = iface.encodeFunctionData('balanceOf', [address]);
+   *   const result = await provider.call({ to: tokenAddr, data });
+   *   const balance = iface.decodeFunctionResult('balanceOf', result)[0];
+   */
+  async call(tx: TransactionRequest): Promise<string> {
+    try {
+      if (!tx.to) {
+        throw new TronAdapterError(
+          'call() requires a "to" address',
+          TronAdapterErrorCode.INVALID_ARGUMENT
+        );
+      }
+      const toAddr = toTronAddress(tx.to, this.tronWeb);
+      const from = tx.from
+        ? toTronAddress(tx.from, this.tronWeb)
+        : this.tronWeb.defaultAddress.base58;
+      const dataHex = tx.data
+        ? tx.data.startsWith('0x') ? tx.data.slice(2) : tx.data
+        : '';
+      const callValue = tx.value ? Number(toBigInt(tx.value)) : 0;
+
+      const result = await this.tronWeb.transactionBuilder.triggerConstantContract(
+        toAddr, '', { callValue, rawParameter: dataHex }, [], from
+      );
+
+      if (result?.constant_result?.[0]) {
+        return '0x' + result.constant_result[0];
+      }
+      return '0x';
+    } catch (error) {
+      if (error instanceof TronAdapterError) throw error;
+      throw normalizeTronError(error);
+    }
+  }
+
+  /**
+   * Estimate the energy cost of executing a transaction.
+   * Analogous to ethers provider.estimateGas().
+   *
+   * Returns energy units (not SUN). To convert to fee_limit in SUN:
+   *   const { energyPrice } = await provider.getFeeData();
+   *   const feeLimit = energyEstimate * energyPrice;
+   *
+   * Returns 0n for plain TRX transfers (no energy required).
+   */
+  async estimateGas(tx: TransactionRequest): Promise<bigint> {
+    try {
+      if (!tx.to) {
+        throw new TronAdapterError(
+          'estimateGas() requires a "to" address',
+          TronAdapterErrorCode.INVALID_ARGUMENT
+        );
+      }
+      const toAddr = toTronAddress(tx.to, this.tronWeb);
+      const from = tx.from
+        ? toTronAddress(tx.from, this.tronWeb)
+        : this.tronWeb.defaultAddress.base58;
+      const dataHex = tx.data
+        ? tx.data.startsWith('0x') ? tx.data.slice(2) : tx.data
+        : '';
+      const callValue = tx.value ? Number(toBigInt(tx.value)) : 0;
+
+      const result = await this.tronWeb.transactionBuilder.triggerConstantContract(
+        toAddr, '', { callValue, rawParameter: dataHex }, [], from
+      );
+
+      if (result?.energy_used !== undefined) {
+        return BigInt(result.energy_used);
+      }
+      // Plain TRX transfers use bandwidth only, zero energy
+      return 0n;
+    } catch (error) {
+      if (error instanceof TronAdapterError) throw error;
+      throw normalizeTronError(error);
+    }
+  }
+
+  /**
+   * Get current fee parameters for the TRON network.
+   * Analogous to ethers provider.getFeeData().
+   *
+   * Key differences from Ethereum:
+   * - energyPrice: SUN per energy unit (TRON's equivalent of gasPrice)
+   * - bandwidthPrice: SUN per bandwidth byte (for non-energy transaction cost)
+   * - maxFeePerGas / maxPriorityFeePerGas: always null (EIP-1559 doesn't apply)
+   *
+   * Typical mainnet values: energyPrice ~420 SUN, bandwidthPrice ~1000 SUN/byte.
+   */
+  async getFeeData(): Promise<FeeData> {
+    try {
+      const params = await this.tronWeb.trx.getChainParameters();
+      const paramsMap: Record<string, number> = {};
+      if (Array.isArray(params)) {
+        for (const p of params) {
+          if (p.key && p.value !== undefined) {
+            paramsMap[p.key] = p.value;
+          }
+        }
+      }
+
+      // getEnergyFee = energy price in SUN per unit (default ~420 SUN)
+      // getTransactionFee = bandwidth price in SUN per byte (default ~1000 SUN)
+      const energyPrice = BigInt(paramsMap['getEnergyFee'] ?? 420);
+      const bandwidthPrice = BigInt(paramsMap['getTransactionFee'] ?? 1000);
+
+      return {
+        energyPrice,
+        bandwidthPrice,
+        gasPrice: energyPrice,    // alias: ethers callsites that read .gasPrice still work
+        maxFeePerGas: null,
+        maxPriorityFeePerGas: null,
+      };
+    } catch (error) {
+      throw normalizeTronError(error);
+    }
+  }
+
+  /**
+   * Query event logs emitted by a contract.
+   * Analogous to ethers provider.getLogs() / eth_getLogs.
+   *
+   * TRON difference: an address filter is required. Full-chain log scanning
+   * (without address) is not supported by the TRON node API.
+   *
+   * Uses the TronGrid event API. Requires the node's fullHost to be a
+   * TronGrid endpoint (default for mainnet/shasta/nile).
+   *
+   * @example
+   *   const logs = await provider.getLogs({
+   *     address: usdtAddress,
+   *     fromBlock: latestBlock - 100,
+   *   });
+   */
+  async getLogs(filter: LogFilter): Promise<Log[]> {
+    try {
+      if (!filter.address) {
+        throw new TronAdapterError(
+          'getLogs() requires an address filter on TRON — full-chain log scanning is not supported',
+          TronAdapterErrorCode.INVALID_ARGUMENT
+        );
+      }
+
+      const tronAddr = toTronAddress(filter.address, this.tronWeb);
+      const options: Record<string, unknown> = { size: 200 };
+
+      if (filter.fromBlock !== undefined) options.minBlockNumber = filter.fromBlock;
+      if (filter.toBlock !== undefined)   options.maxBlockNumber = filter.toBlock;
+
+      // TronWeb's getEventResult hits the event server on TronGrid
+      const events = await this.tronWeb.getEventResult(tronAddr, options);
+      if (!Array.isArray(events)) return [];
+
+      return events.map((event: any, index: number) => ({
+        address: event.contract
+          ? toEthAddress(event.contract, this.tronWeb)
+          : toEthAddress(tronAddr, this.tronWeb),
+        topics: event.raw?.topics || [],
+        data: event.raw?.data ? '0x' + event.raw.data : '0x',
+        blockNumber: event.block || 0,
+        transactionHash: event.transaction || '',
+        logIndex: index,
+      }));
+    } catch (error) {
+      if (error instanceof TronAdapterError) throw error;
+      throw normalizeTronError(error);
+    }
+  }
+
+  /**
+   * Wait for a transaction to be confirmed and return its receipt.
+   * Analogous to ethers provider.waitForTransaction().
+   *
+   * Polls every intervalMs ms, up to maxAttempts times.
+   * Default: 20 attempts × 3 s = 60 s total.
+   *
+   * @throws TronAdapterError with code TIMEOUT if not confirmed in time.
+   */
+  async waitForTransaction(
+    txHash: string,
+    maxAttempts = 20,
+    intervalMs = 3000
+  ): Promise<TransactionReceipt> {
+    return this._waitForTransaction(txHash, maxAttempts, intervalMs);
   }
 
   /**

@@ -54,11 +54,17 @@ export type {
   TransactionResponse,
   TransactionReceipt,
   Log,
+  LogEvent,
+  LogFilter,
   EventFilter,
   ContractDeployParams,
   AccountResources,
   TronProviderOptions,
   NetworkHealth,
+  NetworkInfo,
+  FeeData,
+  TypedDataDomain,
+  TypedDataField,
 } from './types';
 
-export { NETWORKS, TronAdapterErrorCode } from './types';
+export { NETWORKS, CHAIN_IDS, TronAdapterErrorCode } from './types';

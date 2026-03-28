@@ -5,6 +5,8 @@ import {
   TransactionRequest,
   TransactionResponse,
   AnyAddress,
+  TypedDataDomain,
+  TypedDataField,
 } from './types';
 import {
   toTronAddress,
@@ -170,6 +172,66 @@ export class TronSigner {
     }
   }
 
+  /**
+   * Sign EIP-712 / TIP-712 typed structured data.
+   * Analogous to ethers Wallet.signTypedData().
+   *
+   * TRON's TIP-712 is a direct port of Ethereum's EIP-712. Use CHAIN_IDS
+   * from this library to populate the domain.chainId correctly:
+   *
+   * @example
+   *   import { TronSigner, CHAIN_IDS } from 'tron-ethers-adapter';
+   *
+   *   const domain = {
+   *     name: 'MyPermit',
+   *     version: '1',
+   *     chainId: CHAIN_IDS['nile'],
+   *     verifyingContract: tokenAddress,
+   *   };
+   *   const types = {
+   *     Permit: [
+   *       { name: 'owner',   type: 'address' },
+   *       { name: 'spender', type: 'address' },
+   *       { name: 'value',   type: 'uint256' },
+   *       { name: 'nonce',   type: 'uint256' },
+   *       { name: 'deadline',type: 'uint256' },
+   *     ],
+   *   };
+   *   const sig = await signer.signTypedData(domain, types, permitValue);
+   *
+   * Requires TronWeb >= 5.3.0 which ships with TIP-712 support.
+   * Falls back gracefully with a descriptive error on older versions.
+   */
+  async signTypedData(
+    domain: TypedDataDomain,
+    types: Record<string, TypedDataField[]>,
+    value: Record<string, unknown>
+  ): Promise<string> {
+    try {
+      const typedData = {
+        domain,
+        types,
+        primaryType: Object.keys(types).filter((t) => t !== 'EIP712Domain')[0] ?? '',
+        message: value,
+      };
+
+      // TronWeb 5.3+ exposes signTypedData for TIP-712 (EIP-712 equivalent)
+      if (typeof this.tronWeb.trx.signTypedData === 'function') {
+        return await this.tronWeb.trx.signTypedData(typedData);
+      }
+
+      // TronWeb < 5.3 — surface a clear, actionable error
+      throw new TronAdapterError(
+        'signTypedData requires TronWeb >= 5.3.0 which ships with TIP-712 support. ' +
+        'Upgrade: npm install tronweb@latest',
+        TronAdapterErrorCode.INVALID_ARGUMENT
+      );
+    } catch (error) {
+      if (error instanceof TronAdapterError) throw error;
+      throw normalizeTronError(error);
+    }
+  }
+
   // ─── Connect Pattern (ethers.js compatibility) ──────────────────
 
   /**
@@ -286,7 +348,7 @@ export class TronSigner {
         return this.provider.getTransactionReceipt(txHash).then((receipt) => {
           if (receipt) return receipt;
           // Poll until confirmed
-          return this.provider['_waitForTransaction'](txHash);
+          return this.provider.waitForTransaction(txHash);
         });
       },
     };
@@ -306,7 +368,7 @@ export class TronSigner {
       confirmations: 0,
       raw: { txID: txHash },
       wait: async () => {
-        return this.provider['_waitForTransaction'](txHash);
+        return this.provider.waitForTransaction(txHash);
       },
     };
   }

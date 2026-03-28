@@ -232,32 +232,119 @@ The adapter accepts **all three formats everywhere**. You never need to convert 
 | Decimals | 18 | 6 |
 | Token standard | ERC-20 | TRC-20 (same ABI) |
 
-## 12. Quick Reference Cheat Sheet
+## 12. New Capabilities vs ethers.js
+
+### 12a. provider.call() — Raw call / eth_call
+
+```diff
+- const result = await provider.call({ to: addr, data: calldata });
++ const result = await provider.call({ to: addr, data: calldata });
+// identical API — works on TRON too
+```
+
+### 12b. provider.estimateGas()
+
+```diff
+- const gas = await provider.estimateGas({ to: addr, data });
++ const energy = await provider.estimateGas({ to: addr, data });
+// Returns energy units (not SUN). Multiply by energyPrice to get fee_limit.
+// Use getFeeData() to get the current energyPrice.
+```
+
+### 12c. provider.getFeeData()
+
+```diff
+- const { gasPrice, maxFeePerGas } = await provider.getFeeData();
++ const { energyPrice, bandwidthPrice, gasPrice } = await provider.getFeeData();
+// maxFeePerGas is always null on TRON
+// gasPrice is an alias for energyPrice for drop-in compatibility
+```
+
+### 12d. provider.getLogs() — Event log querying
+
+```diff
+- const logs = await provider.getLogs({ address, fromBlock, toBlock, topics });
++ const logs = await provider.getLogs({ address, fromBlock, toBlock });
+// TRON requires an address — full-chain log scanning is not supported
+// Topic filtering is not available at the node level; filter client-side
+```
+
+### 12e. provider.getNetwork()
+
+```diff
+- const { name, chainId } = await provider.getNetwork();
++ const { name, chainId } = await provider.getNetwork();
+// chainId is a bigint: mainnet=728126428n, shasta=2494104990n, nile=3448148188n
+// Use CHAIN_IDS['mainnet'] etc. for EIP-712 domains
+```
+
+### 12f. signer.signTypedData() — EIP-712 / TIP-712
+
+```diff
+- const sig = await signer.signTypedData(domain, types, value);
++ const sig = await signer.signTypedData(domain, types, value);
+// Identical API! Use CHAIN_IDS['mainnet'] in the domain object.
+// Requires TronWeb >= 5.3.0
+```
+
+### 12g. contract.queryFilter() — Historical events
+
+```diff
+- const events = await contract.queryFilter('Transfer', fromBlock, toBlock);
++ const events = await contract.queryFilter('Transfer', fromBlock, toBlock);
+// Identical API. Events include .args keyed by parameter name.
+```
+
+### 12h. contract.on() / off() / once() — Live event subscriptions
+
+```diff
+- contract.on('Transfer', (from, to, value, event) => { ... });
++ contract.on('Transfer', (args, event) => { ... });
+// Arg shape differs: TRON gives args as a keyed object { from, to, value }
+// Uses polling (3 s interval) instead of WebSocket push
+```
+
+## 13. Quick Reference Cheat Sheet
 
 ```typescript
 // ─── SETUP ─────────────────────────────────
-import { TronProvider, TronSigner, TronContract, parseTRX, formatTRX } from 'tron-ethers-adapter';
+import {
+  TronProvider, TronSigner, TronContract,
+  parseTRX, formatTRX, CHAIN_IDS
+} from 'tron-ethers-adapter';
 
-const provider = new TronProvider('nile');                    // testnet
-const signer = new TronSigner(process.env.PRIVATE_KEY, provider);
+const provider = new TronProvider('nile');
+const signer   = new TronSigner(process.env.PRIVATE_KEY, provider);
 
 // ─── READ ──────────────────────────────────
 await provider.getBlockNumber();
-await provider.getBalance('T...');                            // bigint (SUN)
+await provider.getBalance('T...');                                // bigint (SUN)
 await provider.getBlock(12345);
-await provider.getAccountResources('T...');                   // TRON-specific
+await provider.getNetwork();                                      // { name, chainId }
+await provider.call({ to: contractAddr, data: '0x...' });        // eth_call
+await provider.estimateGas({ to: contractAddr, data: '0x...' }); // energy units
+await provider.getFeeData();                                      // { energyPrice, bandwidthPrice }
+await provider.getLogs({ address: contractAddr, fromBlock });     // event logs
+await provider.getAccountResources('T...');                       // TRON-specific
 
 // ─── WRITE ─────────────────────────────────
 await signer.sendTransaction({ to: 'T...', value: parseTRX('10') });
-await signer.sendTRX('T...', 10_000_000n);                   // convenience
-await signer.sendTRC20(tokenAddr, 'T...', 1000000n);         // convenience
+await signer.sendTRX('T...', 10_000_000n);
+await signer.sendTRC20(tokenAddr, 'T...', 1000000n);
+await signer.signTypedData(
+  { name: 'MyDapp', version: '1', chainId: CHAIN_IDS['nile'], verifyingContract: addr },
+  { MyType: [{ name: 'field', type: 'uint256' }] },
+  { field: 42n }
+);
 
 // ─── CONTRACTS ─────────────────────────────
-const token = new TronContract(addr, abi, provider);          // read-only
-const name = await token.name();                              // view call
-const writable = token.connect(signer);                       // attach signer
-const tx = await writable.transfer('T...', 100);              // send tx
-await tx.wait();                                              // wait confirm
+const token    = new TronContract(addr, abi, provider);
+const writable = token.connect(signer);
+await token.name();                                               // view call
+await writable.transfer('T...', 100);                            // send tx
+await token.queryFilter('Transfer', fromBlock, toBlock);         // historical events
+token.on('Transfer', (args) => console.log(args.from, args.to)); // live events
+token.off('Transfer');                                            // unsubscribe
 
 // ─── FORMAT ────────────────────────────────
 parseTRX('1.5');          // → 1_500_000n (SUN)

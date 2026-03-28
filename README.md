@@ -22,7 +22,7 @@ This adapter wraps TronWeb in the same interface you're used to, so porting an E
 + const tx = await signer.sendTransaction({ to, value: parseTRX('1') });
 ```
 
-Everything else — `provider.getBalance()`, `contract.transfer()`, `tx.wait()`, error handling — works the same.
+Everything else — `provider.getBalance()`, `provider.call()`, `estimateGas()`, `getFeeData()`, `getLogs()`, `contract.transfer()`, `contract.queryFilter()`, `contract.on()`, `signer.signTypedData()`, `tx.wait()`, error handling — works the same.
 
 ## Tested against live Nile testnet
 
@@ -72,10 +72,55 @@ const provider = new TronProvider({
 
 ```typescript
 const blockNumber = await provider.getBlockNumber();
-const block = await provider.getBlock(blockNumber);
-const balance = await provider.getBalance('TJCnKsPa7y5okkXvQAidZBzqx3QyQ6sxMW');
-const code = await provider.getCode(contractAddress);
-const resources = await provider.getAccountResources(address);
+const block       = await provider.getBlock(blockNumber);
+const balance     = await provider.getBalance('TJCnKsPa7y5okkXvQAidZBzqx3QyQ6sxMW');
+const code        = await provider.getCode(contractAddress);
+const resources   = await provider.getAccountResources(address);
+const network     = await provider.getNetwork();
+// → { name: 'nile', chainId: 3448148188n }
+```
+
+### Raw call (eth_call equivalent)
+
+```typescript
+// Execute any ABI-encoded calldata — no transaction, no energy cost
+const data   = iface.encodeFunctionData('balanceOf', [userAddress]);
+const result = await provider.call({ to: tokenAddress, data });
+const [bal]  = iface.decodeFunctionResult('balanceOf', result);
+```
+
+### Estimate energy
+
+```typescript
+// Returns energy units (not SUN) — multiply by energyPrice to get fee_limit
+const energy = await provider.estimateGas({
+  to:   contractAddress,
+  data: iface.encodeFunctionData('transfer', [to, amount]),
+});
+
+const { energyPrice } = await provider.getFeeData();
+const feeLimit = energy * energyPrice;
+// → feeLimit in SUN; pass as gasLimit to sendTransaction / contract writes
+```
+
+### Fee data
+
+```typescript
+const { energyPrice, bandwidthPrice, gasPrice } = await provider.getFeeData();
+// energyPrice    ~420n SUN per energy unit
+// bandwidthPrice ~1000n SUN per bandwidth byte
+// gasPrice       alias for energyPrice
+// maxFeePerGas / maxPriorityFeePerGas: always null (no EIP-1559 on TRON)
+```
+
+### Query event logs
+
+```typescript
+// Requires an address filter — full-chain log scanning not supported on TRON
+const logs = await provider.getLogs({
+  address:   usdtAddress,
+  fromBlock: latestBlock - 100,
+});
 ```
 
 ### Send transactions
@@ -111,6 +156,67 @@ await tx.wait();
 ```
 
 TRC-20 ABIs are identical to ERC-20 ABIs. Reuse them directly.
+
+### Query historical events
+
+```typescript
+// Get all Transfer events from a block range (uses TronGrid event API)
+const transfers = await token.queryFilter('Transfer', fromBlock, toBlock);
+for (const e of transfers) {
+  console.log(e.event, e.args.from, e.args.to, e.args.value);
+  console.log(e.transactionHash, e.blockNumber);
+}
+```
+
+### Subscribe to live events (polling)
+
+```typescript
+// Polls every 3 s for new blocks and new events — no WebSocket required
+token.on('Transfer', (args, event) => {
+  console.log(`${args.from} → ${args.to}: ${args.value}`);
+});
+
+// Fire once then auto-unsubscribe
+token.once('Approval', (args) => {
+  console.log('Approved:', args.value);
+});
+
+// Unsubscribe
+token.off('Transfer');          // remove all Transfer listeners
+token.removeAllListeners();     // remove everything
+```
+
+### Sign typed data (EIP-712 / TIP-712)
+
+```typescript
+import { TronSigner, CHAIN_IDS } from 'tron-ethers-adapter';
+
+const domain = {
+  name:              'MyToken',
+  version:           '1',
+  chainId:           CHAIN_IDS['nile'],   // 3448148188
+  verifyingContract: tokenAddress,
+};
+
+const types = {
+  Permit: [
+    { name: 'owner',    type: 'address' },
+    { name: 'spender',  type: 'address' },
+    { name: 'value',    type: 'uint256' },
+    { name: 'nonce',    type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ],
+};
+
+const signature = await signer.signTypedData(domain, types, {
+  owner:    ownerAddress,
+  spender:  spenderAddress,
+  value:    1_000_000n,
+  nonce:    0n,
+  deadline: 9999999999n,
+});
+// Requires TronWeb >= 5.3.0 (ships with TIP-712 support)
+```
 
 ### Addresses
 
@@ -197,7 +303,14 @@ npm run demo:web
 | `getBlockNumber()` | `provider.getBlockNumber()` |
 | `getTransaction(hash)` | `provider.getTransaction()` |
 | `getTransactionReceipt(hash)` | `provider.getTransactionReceipt()` |
+| `getTransactionCount(address)` | `provider.getTransactionCount()` |
 | `getCode(address)` | `provider.getCode()` |
+| `getNetwork()` | `provider.getNetwork()` |
+| `call(tx)` | `provider.call()` |
+| `estimateGas(tx)` | `provider.estimateGas()` |
+| `getFeeData()` | `provider.getFeeData()` |
+| `getLogs(filter)` | `provider.getLogs()` |
+| `waitForTransaction(hash)` | `provider.waitForTransaction()` |
 | `getHealth()` | — |
 | `getAccountResources(address)` | — |
 | `getTRC20Balance(token, owner)` | — |
@@ -209,8 +322,10 @@ npm run demo:web
 |---|---|
 | `getAddress()` | `wallet.getAddress()` |
 | `getTronAddress()` | — |
+| `getBalance()` | `wallet.provider.getBalance(wallet.address)` |
 | `sendTransaction(tx)` | `wallet.sendTransaction()` |
 | `signMessage(msg)` | `wallet.signMessage()` |
+| `signTypedData(domain, types, value)` | `wallet.signTypedData()` |
 | `sendTRX(to, amount)` | — |
 | `sendTRC20(token, to, amount)` | — |
 | `connect(provider)` | `wallet.connect()` |
@@ -223,6 +338,11 @@ npm run demo:web
 | `TronContract.deploy(params, signer)` | `ContractFactory.deploy()` |
 | `contract.connect(signer)` | `contract.connect()` |
 | `contract.attach(address)` | `contract.attach()` |
+| `contract.queryFilter(event, from?, to?)` | `contract.queryFilter()` |
+| `contract.on(event, listener)` | `contract.on()` |
+| `contract.once(event, listener)` | `contract.once()` |
+| `contract.off(event, listener?)` | `contract.off()` |
+| `contract.removeAllListeners()` | `contract.removeAllListeners()` |
 
 ## Gas vs energy
 
@@ -232,8 +352,8 @@ TRON doesn't have gas. The adapter maps `gasLimit` to `fee_limit` (max TRX to bu
 
 ```bash
 npm install
-npm test                  # 177 unit tests with coverage
-npm run test:integration  # 17 live tests against Nile
+npm test                  # unit tests with coverage
+npm run test:integration  # live tests against Nile
 npm run lint              # ESLint
 npm run typecheck         # TypeScript strict
 npm run check             # all of the above + build
@@ -245,18 +365,21 @@ npm run build             # compile to dist/
 ```
 src/
   index.ts          — exports
-  provider.ts       — TronProvider
-  signer.ts         — TronSigner
-  contract.ts       — TronContract
-  types.ts          — TypeScript interfaces
+  provider.ts       — TronProvider (getBalance, call, estimateGas, getFeeData, getLogs, …)
+  signer.ts         — TronSigner (sendTransaction, signMessage, signTypedData, …)
+  contract.ts       — TronContract (ABI dispatch, queryFilter, on/off/once, deploy, …)
+  types.ts          — TypeScript interfaces + CHAIN_IDS constant
   utils/
     address.ts      — address format detection and conversion
     conversion.ts   — SUN/TRX, gas/energy, parseUnits/formatUnits
     errors.ts       — error normalization
 tests/
-  *.test.ts         — 177 unit tests (mocked TronWeb)
+  *.test.ts         — unit tests (mocked TronWeb)
+  provider-new-methods.test.ts  — call, estimateGas, getFeeData, getLogs, getNetwork
+  signer-typed-data.test.ts     — signTypedData / TIP-712
+  contract-events.test.ts       — queryFilter, on, off, once
   integration/
-    nile.test.ts    — 17 live Nile testnet tests
+    nile.test.ts    — live Nile testnet tests
 scripts/
   live-demo.ts      — CLI demo
 demo/
